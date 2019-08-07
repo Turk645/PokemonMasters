@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Import Pokemon Masters Models",
     "author": "Turk",
-    "version": (1, 0, 0),
+    "version": (1, 0, 2),
     "blender": (2, 79, 0),
     "location": "File > Import-Export",
     "description": "A tool designed to import LMD files from the mobile game Pokemon Masters",
@@ -120,13 +120,20 @@ def ReadMeshChunk(CurFile,StartAddr,ArmatureObject):
     for x in range(VertCount):
         TempVert = struct.unpack('fff', CurFile.read(4*3))
         CurFile.seek(4,1)
-        if VertChunkSize == 0x24:
+        if VertChunkSize == 0x24 or VertChunkSize == 0x28:
+            bHasColor = True
             TempColor = struct.unpack('4B', CurFile.read(4))
             ColorData.append((TempColor[0]/255,TempColor[1]/255,TempColor[2]/255))
             AlphaData.append((TempColor[3]/255,TempColor[3]/255,TempColor[3]/255))
-        if VertChunkSize > 0x24:
-            CurFile.seek(VertChunkSize-0x20,1)
+        elif VertChunkSize == 0x30:
+            bHasColor = True
+            TempColor = struct.unpack('4B', CurFile.read(4))
+            ColorData.append((TempColor[0]/255,TempColor[1]/255,TempColor[2]/255))
+            AlphaData.append((TempColor[3]/255,TempColor[3]/255,TempColor[3]/255))
+            CurFile.seek(0xc,1)
         TempUV = (np.fromstring(CurFile.read(2), dtype='<f2'),1-np.fromstring(CurFile.read(2), dtype='<f2'))
+        if VertChunkSize == 0x28:
+            CurFile.seek(4,1)
         VGBone = (int.from_bytes(CurFile.read(1),byteorder='little'),int.from_bytes(CurFile.read(1),byteorder='little'),int.from_bytes(CurFile.read(1),byteorder='little'),int.from_bytes(CurFile.read(1),byteorder='little'))
         VGWeight = (int.from_bytes(CurFile.read(2),byteorder='little'),int.from_bytes(CurFile.read(2),byteorder='little'),int.from_bytes(CurFile.read(2),byteorder='little'),int.from_bytes(CurFile.read(2),byteorder='little'))
         VGData.append((x,VGBone,VGWeight))
@@ -134,8 +141,9 @@ def ReadMeshChunk(CurFile,StartAddr,ArmatureObject):
         UVTable.append(TempUV)
         
         
-        
-    CurFile.seek(VertOffset+VertSize+Size+0x4)
+    if Size == 1: UnknownSize = 2
+    else: UnknownSize = 4
+    CurFile.seek(VertOffset+VertSize+Size+UnknownSize)
     UnknownCount = int.from_bytes(CurFile.read(4),byteorder='little')
     CurFile.seek(0x10*UnknownCount,1)
     SizeTest = int.from_bytes(CurFile.read(4),byteorder='little')
@@ -211,8 +219,8 @@ def ReadMeshChunk(CurFile,StartAddr,ArmatureObject):
         color_layerA = bm.loops.layers.color.new("Color_ALPHA")
         for f in bm.faces:
             for l in f.loops:
-                l[color_layer]= ColorTable[l.vert.index]
-                l[color_layerA]= AlphaTable[l.vert.index]
+                l[color_layer]= ColorData[l.vert.index]
+                l[color_layerA]= AlphaData[l.vert.index]
         bm.to_mesh(mesh)
 
     bm.free()
