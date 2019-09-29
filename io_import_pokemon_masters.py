@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Import Pokemon Masters Models",
     "author": "Turk",
-    "version": (1, 0, 2),
+    "version": (1, 1, 0),
     "blender": (2, 79, 0),
     "location": "File > Import-Export",
     "description": "A tool designed to import LMD files from the mobile game Pokemon Masters",
@@ -50,9 +50,17 @@ class PokeMastImport(bpy.types.Operator, ImportHelper):
             )
  
     filepath = StringProperty(subtype='FILE_PATH',)
+    version = EnumProperty(name="Version",items=(("1.0","1.0","1.0"),("1.2","1.2","1.2")),default="1.0")
+    removedoubles = BoolProperty(name="Remove Doubles")
+
     files = CollectionProperty(type=bpy.types.PropertyGroup)
     def draw(self, context):
         layout = self.layout
+        layout.separator()
+        layout.prop(self,'version')
+        #layout.separator()
+        #layout.prop(self,'removedoubles')
+
     def execute(self, context):
         print("=====\nLoading file {}".format(self.filepath))
 
@@ -72,7 +80,7 @@ class PokeMastImport(bpy.types.Operator, ImportHelper):
         CurMeshOffset = CurFile.tell()
         print("Loading meshes:")
         for x in MeshList:
-            ReadMeshChunk(CurFile,x,ArmatureObject)
+            ReadMeshChunk(CurFile,x,ArmatureObject,self.version,self.removedoubles)
 
         CurFile.close()
         ArmatureObject.rotation_euler = (1.5707963705062866,0,0)
@@ -83,7 +91,7 @@ class PokeMastImport(bpy.types.Operator, ImportHelper):
         return {'RUNNING_MODAL'}
 
 
-def ReadMeshChunk(CurFile,StartAddr,ArmatureObject):
+def ReadMeshChunk(CurFile,StartAddr,ArmatureObject,Version="1.0",RemoveDoubles=False):
     CurFile.seek(StartAddr+7)
     VertChunkSize = int.from_bytes(CurFile.read(1),byteorder='little')
     
@@ -121,7 +129,6 @@ def ReadMeshChunk(CurFile,StartAddr,ArmatureObject):
     VertSize = int.from_bytes(CurFile.read(Size),byteorder='little')
     VertOffset = CurFile.tell()
     
-    
     #Read Vert Info Here
     VertTable = []
     UVTable = []
@@ -132,26 +139,30 @@ def ReadMeshChunk(CurFile,StartAddr,ArmatureObject):
     for x in range(VertCount):
         TempVert = struct.unpack('fff', CurFile.read(4*3))
         CurFile.seek(4,1)
-        if VertChunkSize == 0x24 or VertChunkSize == 0x28:
+        if (VertChunkSize >= 0x24) & (Version == "1.0"):
             bHasColor = True
             TempColor = struct.unpack('4B', CurFile.read(4))
             ColorData.append((TempColor[0]/255,TempColor[1]/255,TempColor[2]/255))
             AlphaData.append((TempColor[3]/255,TempColor[3]/255,TempColor[3]/255))
-        elif VertChunkSize == 0x30:
-            bHasColor = True
-            TempColor = struct.unpack('4B', CurFile.read(4))
-            ColorData.append((TempColor[0]/255,TempColor[1]/255,TempColor[2]/255))
-            AlphaData.append((TempColor[3]/255,TempColor[3]/255,TempColor[3]/255))
-            CurFile.seek(0xc,1)
         TempUV = (np.fromstring(CurFile.read(2), dtype='<f2'),1-np.fromstring(CurFile.read(2), dtype='<f2'))
-        if VertChunkSize == 0x28:
-            CurFile.seek(4,1)
-        VGBone = (int.from_bytes(CurFile.read(1),byteorder='little'),int.from_bytes(CurFile.read(1),byteorder='little'),int.from_bytes(CurFile.read(1),byteorder='little'),int.from_bytes(CurFile.read(1),byteorder='little'))
-        VGWeight = (int.from_bytes(CurFile.read(2),byteorder='little'),int.from_bytes(CurFile.read(2),byteorder='little'),int.from_bytes(CurFile.read(2),byteorder='little'),int.from_bytes(CurFile.read(2),byteorder='little'))
+        if (VertChunkSize >= 0x24) & (Version == "1.0"):
+            CurFile.seek(VertChunkSize - 0x24, 1)
+        VGBone = (
+            int.from_bytes(CurFile.read(1),byteorder='little'),
+            int.from_bytes(CurFile.read(1),byteorder='little'),
+            int.from_bytes(CurFile.read(1),byteorder='little'),
+            int.from_bytes(CurFile.read(1),byteorder='little'))
+        if Version == "1.0":
+            VGWeight = (
+                int.from_bytes(CurFile.read(2),byteorder='little')/65535,
+                int.from_bytes(CurFile.read(2),byteorder='little')/65535,
+                int.from_bytes(CurFile.read(2),byteorder='little')/65535,
+                int.from_bytes(CurFile.read(2),byteorder='little')/65535)
+        else:
+            VGWeight = struct.unpack('ffff', CurFile.read(4*4))
         VGData.append((x,VGBone,VGWeight))
         VertTable.append(TempVert)
         UVTable.append(TempUV)
-        
         
     if Size == 1: UnknownSize = 2
     else: UnknownSize = 4
@@ -184,6 +195,7 @@ def ReadMeshChunk(CurFile,StartAddr,ArmatureObject):
     WeightBoneTable = []
     CurFile.seek(WeightBoneNameTableStart)
     WeightBoneCount = int.from_bytes(CurFile.read(4),byteorder='little')
+
     for x in range(WeightBoneCount):
         CurFile.seek(WeightBoneNameTableStart + x*4 + 4)
         WeightBoneNameOffset = CurFile.tell() + int.from_bytes(CurFile.read(4),byteorder='little')
@@ -191,6 +203,7 @@ def ReadMeshChunk(CurFile,StartAddr,ArmatureObject):
         WeightBoneNameSize = int.from_bytes(CurFile.read(4),byteorder='little')
         WeightBoneName = CurFile.read(WeightBoneNameSize).decode('utf-8','replace')
         WeightBoneTable.append(WeightBoneName)
+        print('{}: {}'.format(WeightBoneName,WeightBoneNameOffset))
     
     #Build Mesh
     
@@ -205,13 +218,14 @@ def ReadMeshChunk(CurFile,StartAddr,ArmatureObject):
     bm = bmesh.new()
     for v in VertTable:
         bm.verts.new((v[0],v[1],v[2]))
-    list = [v for v in bm.verts]
+    vlist = [v for v in bm.verts]
     for f in FaceTable:
         try:
-            bm.faces.new((list[f[0]],list[f[1]],list[f[2]]))
+            bm.faces.new((vlist[f[0]],vlist[f[1]],vlist[f[2]]))
         except:
             continue
-    print('- {}: {} - {}'.format(ModelName,MaterialNameText,len(list)))
+    print('- {}: {} - {}'.format(ModelName,MaterialNameText,len(vlist)))
+
     bm.to_mesh(mesh)
 
     uv_layer = bm.loops.layers.uv.verify()
@@ -225,7 +239,13 @@ def ReadMeshChunk(CurFile,StartAddr,ArmatureObject):
             except:
                 continue
     bm.to_mesh(mesh)
-    
+    mesh.auto_smooth_angle = 1.2
+    """if RemoveDoubles:
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.00001)
+        bm.to_mesh(mesh)
+        mesh.validate(verbose=True)
+        mesh.update()"""
+
     if bHasColor:
         color_layer = bm.loops.layers.color.new("Color")
         color_layerA = bm.loops.layers.color.new("Color_ALPHA")
@@ -241,11 +261,15 @@ def ReadMeshChunk(CurFile,StartAddr,ArmatureObject):
     for x in VGData:
         for i in range(4):
             if x[2][i] != 0:
-                if obj.vertex_groups.find(WeightBoneTable[x[1][i]]) == -1:
-                    TempVG = obj.vertex_groups.new(WeightBoneTable[x[1][i]])
-                else:
-                    TempVG = obj.vertex_groups[obj.vertex_groups.find(WeightBoneTable[x[1][i]])]
-                TempVG.add([x[0]],x[2][i]/65535,'ADD')
+                try:
+                    if obj.vertex_groups.find(WeightBoneTable[x[1][i]]) == -1:
+                        TempVG = obj.vertex_groups.new(WeightBoneTable[x[1][i]])
+                    else:
+                        TempVG = obj.vertex_groups[obj.vertex_groups.find(WeightBoneTable[x[1][i]])]
+                    TempVG.add([x[0]],x[2][i],'ADD')
+                except Exception as e:
+                    print (" WEIGHT FAIL")
+
     #add materials
     if obj.data.materials:
         obj.data.materials[0]=bpy.data.materials.get(MaterialNameText)
