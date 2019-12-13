@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Import Pokemon Masters Models",
     "author": "Turk",
-    "version": (1, 0, 2),
+    "version": (1, 1, 0),
     "blender": (2, 79, 0),
     "location": "File > Import-Export",
     "description": "A tool designed to import LMD files from the mobile game Pokemon Masters",
@@ -25,8 +25,19 @@ from bpy.props import (BoolProperty,
                        CollectionProperty
                        )
 from bpy_extras.io_utils import ImportHelper
-                       
-                       
+import fnmatch
+import traceback
+
+# To find a file in a path (including subfolders). Thanks Nadia Alramli
+# for the answer from some corner in StackOverflow a decade ago
+def find_file(pattern, path):
+    result = []
+    for root, dirs, files in os.walk(path):
+        for name in files:
+            if fnmatch.fnmatch(name, pattern):
+                result.append(os.path.join(root, name))
+    return result
+
 class PokeMastImport(bpy.types.Operator, ImportHelper):
     bl_idname = "import_scene.pokemonmasters"
     bl_label = "Import"
@@ -39,16 +50,24 @@ class PokeMastImport(bpy.types.Operator, ImportHelper):
             )
  
     filepath = StringProperty(subtype='FILE_PATH',)
+    version = EnumProperty(name="Version",items=(("1.0","1.0","1.0"),("1.2","1.2","1.2")),default="1.0")
+    removedoubles = BoolProperty(name="Remove Doubles")
+
     files = CollectionProperty(type=bpy.types.PropertyGroup)
     def draw(self, context):
         layout = self.layout
+        layout.separator()
+        layout.prop(self,'version')
+        #layout.separator()
+        #layout.prop(self,'removedoubles')
+
     def execute(self, context):
+        print("=====\nLoading file {}".format(self.filepath))
+
         CurFile = open(self.filepath,"rb")
-        
         CurFile.seek(0x34)
         BoneDataOffset = CurFile.tell() + int.from_bytes(CurFile.read(4),byteorder='little')
         ArmatureObject = BuildSkeleton(CurFile,BoneDataOffset)
-        
         CurFile.seek(0x38)
         MaterialDataOffset = CurFile.tell() + int.from_bytes(CurFile.read(4),byteorder='little')
         ParseMaterials(CurFile,MaterialDataOffset)
@@ -59,8 +78,9 @@ class PokeMastImport(bpy.types.Operator, ImportHelper):
         for x in range(MeshCount):
             MeshList.append(CurFile.tell() + int.from_bytes(CurFile.read(4),byteorder='little'))
         CurMeshOffset = CurFile.tell()
+        print("Loading meshes:")
         for x in MeshList:
-            ReadMeshChunk(CurFile,x,ArmatureObject)
+            ReadMeshChunk(CurFile,x,ArmatureObject,self.version,self.removedoubles)
 
         CurFile.close()
         ArmatureObject.rotation_euler = (1.5707963705062866,0,0)
@@ -71,7 +91,7 @@ class PokeMastImport(bpy.types.Operator, ImportHelper):
         return {'RUNNING_MODAL'}
 
 
-def ReadMeshChunk(CurFile,StartAddr,ArmatureObject):
+def ReadMeshChunk(CurFile,StartAddr,ArmatureObject,Version="1.0",RemoveDoubles=False):
     CurFile.seek(StartAddr+7)
     VertChunkSize = int.from_bytes(CurFile.read(1),byteorder='little')
     
@@ -79,14 +99,14 @@ def ReadMeshChunk(CurFile,StartAddr,ArmatureObject):
     ModelNameArea = CurFile.tell() + int.from_bytes(CurFile.read(4),byteorder='little')
     CurFile.seek(ModelNameArea)
     ModelNameLength = int.from_bytes(CurFile.read(4),byteorder='little')
-    ModelName = CurFile.read(ModelNameLength).decode('utf-8')
-    
+    ModelName = CurFile.read(ModelNameLength).decode('utf-8','replace')
+
     #Get Material Name
     CurFile.seek(StartAddr+0x14)
     MaterialNameOffset = CurFile.tell() + int.from_bytes(CurFile.read(4),byteorder='little')
     CurFile.seek(MaterialNameOffset+8)
     MaterialNameSize = int.from_bytes(CurFile.read(4),byteorder='little')
-    MaterialNameText = CurFile.read(MaterialNameSize).decode('utf-8')
+    MaterialNameText = CurFile.read(MaterialNameSize).decode('utf-8','replace')
     
     CurFile.seek(StartAddr+0x58)
     WeightBoneNameTableStart = CurFile.tell() + int.from_bytes(CurFile.read(4),byteorder='little')
@@ -109,7 +129,6 @@ def ReadMeshChunk(CurFile,StartAddr,ArmatureObject):
     VertSize = int.from_bytes(CurFile.read(Size),byteorder='little')
     VertOffset = CurFile.tell()
     
-    
     #Read Vert Info Here
     VertTable = []
     UVTable = []
@@ -120,26 +139,30 @@ def ReadMeshChunk(CurFile,StartAddr,ArmatureObject):
     for x in range(VertCount):
         TempVert = struct.unpack('fff', CurFile.read(4*3))
         CurFile.seek(4,1)
-        if VertChunkSize == 0x24 or VertChunkSize == 0x28:
+        if (VertChunkSize >= 0x24) & (Version == "1.0"):
             bHasColor = True
             TempColor = struct.unpack('4B', CurFile.read(4))
             ColorData.append((TempColor[0]/255,TempColor[1]/255,TempColor[2]/255))
             AlphaData.append((TempColor[3]/255,TempColor[3]/255,TempColor[3]/255))
-        elif VertChunkSize == 0x30:
-            bHasColor = True
-            TempColor = struct.unpack('4B', CurFile.read(4))
-            ColorData.append((TempColor[0]/255,TempColor[1]/255,TempColor[2]/255))
-            AlphaData.append((TempColor[3]/255,TempColor[3]/255,TempColor[3]/255))
-            CurFile.seek(0xc,1)
         TempUV = (np.fromstring(CurFile.read(2), dtype='<f2'),1-np.fromstring(CurFile.read(2), dtype='<f2'))
-        if VertChunkSize == 0x28:
-            CurFile.seek(4,1)
-        VGBone = (int.from_bytes(CurFile.read(1),byteorder='little'),int.from_bytes(CurFile.read(1),byteorder='little'),int.from_bytes(CurFile.read(1),byteorder='little'),int.from_bytes(CurFile.read(1),byteorder='little'))
-        VGWeight = (int.from_bytes(CurFile.read(2),byteorder='little'),int.from_bytes(CurFile.read(2),byteorder='little'),int.from_bytes(CurFile.read(2),byteorder='little'),int.from_bytes(CurFile.read(2),byteorder='little'))
+        if (VertChunkSize >= 0x24) & (Version == "1.0"):
+            CurFile.seek(VertChunkSize - 0x24, 1)
+        VGBone = (
+            int.from_bytes(CurFile.read(1),byteorder='little'),
+            int.from_bytes(CurFile.read(1),byteorder='little'),
+            int.from_bytes(CurFile.read(1),byteorder='little'),
+            int.from_bytes(CurFile.read(1),byteorder='little'))
+        if Version == "1.0":
+            VGWeight = (
+                int.from_bytes(CurFile.read(2),byteorder='little')/65535,
+                int.from_bytes(CurFile.read(2),byteorder='little')/65535,
+                int.from_bytes(CurFile.read(2),byteorder='little')/65535,
+                int.from_bytes(CurFile.read(2),byteorder='little')/65535)
+        else:
+            VGWeight = struct.unpack('ffff', CurFile.read(4*4))
         VGData.append((x,VGBone,VGWeight))
         VertTable.append(TempVert)
         UVTable.append(TempUV)
-        
         
     if Size == 1: UnknownSize = 2
     else: UnknownSize = 4
@@ -172,13 +195,15 @@ def ReadMeshChunk(CurFile,StartAddr,ArmatureObject):
     WeightBoneTable = []
     CurFile.seek(WeightBoneNameTableStart)
     WeightBoneCount = int.from_bytes(CurFile.read(4),byteorder='little')
+
     for x in range(WeightBoneCount):
         CurFile.seek(WeightBoneNameTableStart + x*4 + 4)
         WeightBoneNameOffset = CurFile.tell() + int.from_bytes(CurFile.read(4),byteorder='little')
         CurFile.seek(WeightBoneNameOffset)
         WeightBoneNameSize = int.from_bytes(CurFile.read(4),byteorder='little')
-        WeightBoneName = CurFile.read(WeightBoneNameSize).decode('utf-8')
+        WeightBoneName = CurFile.read(WeightBoneNameSize).decode('utf-8','replace')
         WeightBoneTable.append(WeightBoneName)
+        print('{}: {}'.format(WeightBoneName,WeightBoneNameOffset))
     
     #Build Mesh
     
@@ -193,13 +218,14 @@ def ReadMeshChunk(CurFile,StartAddr,ArmatureObject):
     bm = bmesh.new()
     for v in VertTable:
         bm.verts.new((v[0],v[1],v[2]))
-    list = [v for v in bm.verts]
+    vlist = [v for v in bm.verts]
     for f in FaceTable:
         try:
-            bm.faces.new((list[f[0]],list[f[1]],list[f[2]]))
+            bm.faces.new((vlist[f[0]],vlist[f[1]],vlist[f[2]]))
         except:
             continue
-            
+    print('- {}: {} - {}'.format(ModelName,MaterialNameText,len(vlist)))
+
     bm.to_mesh(mesh)
 
     uv_layer = bm.loops.layers.uv.verify()
@@ -213,7 +239,13 @@ def ReadMeshChunk(CurFile,StartAddr,ArmatureObject):
             except:
                 continue
     bm.to_mesh(mesh)
-    
+    mesh.auto_smooth_angle = 1.2
+    """if RemoveDoubles:
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.00001)
+        bm.to_mesh(mesh)
+        mesh.validate(verbose=True)
+        mesh.update()"""
+
     if bHasColor:
         color_layer = bm.loops.layers.color.new("Color")
         color_layerA = bm.loops.layers.color.new("Color_ALPHA")
@@ -229,11 +261,15 @@ def ReadMeshChunk(CurFile,StartAddr,ArmatureObject):
     for x in VGData:
         for i in range(4):
             if x[2][i] != 0:
-                if obj.vertex_groups.find(WeightBoneTable[x[1][i]]) == -1:
-                    TempVG = obj.vertex_groups.new(WeightBoneTable[x[1][i]])
-                else:
-                    TempVG = obj.vertex_groups[obj.vertex_groups.find(WeightBoneTable[x[1][i]])]
-                TempVG.add([x[0]],x[2][i]/65535,'ADD')
+                try:
+                    if obj.vertex_groups.find(WeightBoneTable[x[1][i]]) == -1:
+                        TempVG = obj.vertex_groups.new(WeightBoneTable[x[1][i]])
+                    else:
+                        TempVG = obj.vertex_groups[obj.vertex_groups.find(WeightBoneTable[x[1][i]])]
+                    TempVG.add([x[0]],x[2][i],'ADD')
+                except Exception as e:
+                    print (" WEIGHT FAIL")
+
     #add materials
     if obj.data.materials:
         obj.data.materials[0]=bpy.data.materials.get(MaterialNameText)
@@ -253,9 +289,10 @@ def BuildSkeleton(CurFile,DataStart):
     BoneOffsetTable = []
     for x in range(BoneCount):
         BoneOffsetTable.append(CurFile.tell()+int.from_bytes(CurFile.read(4),byteorder='little'))
-        
-    armature_data = bpy.data.armatures.new("Armature")
-    armature_obj = bpy.data.objects.new("Armature", armature_data)
+
+    name = os.path.split(CurFile.name)[-1]
+    armature_data = bpy.data.armatures.new(name)
+    armature_obj = bpy.data.objects.new(name, armature_data)
     bpy.context.scene.objects.link(armature_obj)
     select_all(False)
     armature_obj.select = True
@@ -270,7 +307,7 @@ def BuildSkeleton(CurFile,DataStart):
         NameOffset = CurFile.tell() + int.from_bytes(CurFile.read(4),byteorder='little')
         CurFile.seek(NameOffset)
         BoneNameLength = int.from_bytes(CurFile.read(4),byteorder='little')
-        BoneName = CurFile.read(BoneNameLength).decode('utf-8')
+        BoneName = CurFile.read(BoneNameLength).decode('utf-8','replace')
         CurFile.seek(x+8)
         BoneMatrix = mathutils.Matrix((struct.unpack('ffff', CurFile.read(4*4)),struct.unpack('ffff', CurFile.read(4*4)),struct.unpack('ffff', CurFile.read(4*4)),struct.unpack('ffff', CurFile.read(4*4))))
         CurFile.seek(x+0x38)
@@ -279,7 +316,7 @@ def BuildSkeleton(CurFile,DataStart):
         BoneParentOffset = CurFile.tell() + int.from_bytes(CurFile.read(4),byteorder='little')
         CurFile.seek(BoneParentOffset)
         BoneParentNameLength = int.from_bytes(CurFile.read(4),byteorder='little')
-        BoneParentName = CurFile.read(BoneParentNameLength).decode('utf-8')
+        BoneParentName = CurFile.read(BoneParentNameLength).decode('utf-8','replace')
         
         edit_bone = armature_obj.data.edit_bones.new(BoneName)
         edit_bone.use_connect = False
@@ -316,8 +353,56 @@ def ParseMaterials(CurFile,DataStart):
     MatTable = []
     CurFile.seek(DataStart+4)
     MaterialNameOffset = CurFile.tell() + int.from_bytes(CurFile.read(4),byteorder='little')
+    CurFile.seek(DataStart+12)
+    TextureCount = int.from_bytes(CurFile.read(4),byteorder='little')
+    TextureOffSetTable = []
+    for x in range(TextureCount):
+        TextureOffSetTable.append(CurFile.tell() + int.from_bytes(CurFile.read(4), byteorder='little'))
+    Textures = {}
+    print("Loading {} texture{}:".format(TextureCount,'' if TextureCount == 1 else 's'))
+    for x in TextureOffSetTable:
+        CurFile.seek(x+4)
+        TexFileRefOffset = CurFile.tell() + int.from_bytes(CurFile.read(4),byteorder='little')
+        TexFileNameOffset = CurFile.tell() + int.from_bytes(CurFile.read(4),byteorder='little')
+        TexFileMapOffset = CurFile.tell() + int.from_bytes(CurFile.read(4),byteorder='little')
+        CurFile.seek(TexFileNameOffset)
+        TexFileNameSize = int.from_bytes(CurFile.read(4),byteorder='little')
+        TexFileName = CurFile.read(TexFileNameSize).decode('utf-8','replace')
+
+        CurFile.seek(TexFileRefOffset)
+        TexFileRefSize = int.from_bytes(CurFile.read(4),byteorder='little')
+        TexFileRef = CurFile.read(TexFileRefSize).decode('utf-8','replace')
+
+        CurFile.seek(TexFileMapOffset)
+        TexFileMapSize = int.from_bytes(CurFile.read(4),byteorder='little')
+        TexFileMap = CurFile.read(TexFileMapSize).decode('utf-8','replace')
+        Textures.update({TexFileRef:TexFileName})
+        tex = bpy.data.textures.get(TexFileName)
+        if not tex:
+            tex = bpy.data.textures.new(name=TexFileName,type='IMAGE')
+            try:
+                filepath = os.path.split(os.path.realpath(CurFile.name))
+                files = find_file(TexFileName, filepath[0])
+                # Try finding the file by brute force
+                if not files:
+                    files = find_file(TexFileName.replace(".tga",".ktx.tga"), filepath[0])
+                if not files:
+                    files = find_file(TexFileName.replace(".tga",".png"), filepath[0])
+                if not files:
+                    files = find_file(TexFileName.replace(".tga", ".ktx.png"), filepath[0])
+                if not files:
+                    files = find_file(TexFileName.replace(".tga", "*.png"), filepath[0])
+                if files:
+                    bpy.ops.image.open(filepath=files[0])
+                    filename = os.path.split(files[0])[-1]
+                    tex.image = bpy.data.images.get(filename)
+            except:
+                print(traceback.format_exc())
+        print("- {}: {} / {}".format(TexFileRef,TexFileName,TexFileMap))
+
     CurFile.seek(MaterialNameOffset)
     MaterialCount = int.from_bytes(CurFile.read(4),byteorder='little')
+    print("Loading {} material{}:".format(MaterialCount,'' if MaterialCount == 1 else 's'))
     MatOffsetTable = []
     for x in range(MaterialCount):
         MatOffsetTable.append(CurFile.tell() + int.from_bytes(CurFile.read(4),byteorder='little'))
@@ -326,13 +411,39 @@ def ParseMaterials(CurFile,DataStart):
         MaterialNameTextOffset = CurFile.tell() + int.from_bytes(CurFile.read(4),byteorder='little')
         CurFile.seek(MaterialNameTextOffset)
         MaterialNameTextSize = int.from_bytes(CurFile.read(4),byteorder='little')
-        MaterialNameText = CurFile.read(MaterialNameTextSize).decode('utf-8')
-        CurFile.seek(x+0x48)
-        MaterialFileReferenceSize = int.from_bytes(CurFile.read(4),byteorder='little')
-        MaterialFileReferenceName = CurFile.read(MaterialNameTextSize).decode('utf-8')
+        MaterialNameText = CurFile.read(MaterialNameTextSize).decode('utf-8','replace')
+
+        CurFile.seek(x + 0x38)
+        flag = int.from_bytes(CurFile.read(4),byteorder='little')
+        if flag == 0x40000000:
+            CurFile.seek(x + 0x44)
+        else:
+            CurFile.seek(x + 0x40)
+        TexSlotCount = int.from_bytes(CurFile.read(4),byteorder='little')
+        TexSlotsOffset = []
+        TexSlots = []
+        print("- {}".format(MaterialNameText))
+
+        for y in range(TexSlotCount):
+            TexSlotsOffset.append(CurFile.tell() + int.from_bytes(CurFile.read(4),byteorder='little'))
+        for texslot in TexSlotsOffset:
+            CurFile.seek(texslot)
+            MaterialFileReferenceSize = int.from_bytes(CurFile.read(4),byteorder='little')
+            MaterialFileReferenceName = CurFile.read(MaterialFileReferenceSize).decode('utf-8','replace')
+            print('- Texture slot [{}]'.format(MaterialFileReferenceName))
+            TexSlots.append(Textures.get(MaterialFileReferenceName))
+
         mat = bpy.data.materials.get(MaterialNameText)
         if mat == None:
             mat = bpy.data.materials.new(name=MaterialNameText)
+            mat.use_transparency=True
+            mat.alpha = 0.0
+            for texture in TexSlots:
+                tex = bpy.data.textures.get(texture)
+                if tex:
+                    slot = mat.texture_slots.add()
+                    slot.use_map_alpha = True
+                    slot.texture = tex
         MatTable.append(mat)
     return MatTable
     
