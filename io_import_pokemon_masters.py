@@ -213,7 +213,7 @@ def parse_meshes(CurFile,Start,CurCollection,ArmData,self):
         FaceEntrySize = 2
         if FaceChunkSize > 65535:
             FaceEntrySize = 4
-        elif FaceChunkSize < 256:
+        elif FaceChunkSize <= 256:
             FaceEntrySize = 1
         CurFile.seek(FaceEntrySize,1)
         if VertCount < 0x100:
