@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Pokemon Masters Importer (.LMD)",
-    "author": "Turk",
-    "version": (1, 0, 5),
+    "author": "Turk (small edits by Plastered_Crab)",
+    "version": (1, 0, 6),
     "blender": (2, 80, 0),
     "location": "File > Import-Export",
     "description": "A tool designed to import LMD files from the mobile game Pokemon Masters",
@@ -16,6 +16,7 @@ import io
 import struct
 import math
 import mathutils
+import re
 import numpy as np
 from bpy.props import (BoolProperty,
                        FloatProperty,
@@ -24,63 +25,80 @@ from bpy.props import (BoolProperty,
                        CollectionProperty
                        )
 from bpy_extras.io_utils import ImportHelper
+from bpy.types import (
+                Operator,
+                OperatorFileListElement,
+                )
 
 class PokeMastImport(bpy.types.Operator, ImportHelper):
     bl_idname = "custom_import_scene.pokemonmasters"
     bl_label = "Import"
     bl_options = {'PRESET', 'UNDO'}
     filename_ext = ".lmd"
-    filter_glob = StringProperty(
+    filter_glob: StringProperty(
             default="*.lmd",
+            maxlen=255,
             options={'HIDDEN'},
             )
+    directory: StringProperty(
+            subtype='DIR_PATH',
+            )
     filepath = StringProperty(subtype='FILE_PATH',)
-    files = CollectionProperty(type=bpy.types.PropertyGroup)
+    files: CollectionProperty(
+            name="File Path",
+            type=OperatorFileListElement,
+            )
     def draw(self, context):
         pass
     def execute(self, context):
-        CurFile = open(self.filepath,"rb")
-        CurCollection = bpy.data.collections.new("LMD Collection")#Make Collection per lmd loaded
-        bpy.context.scene.collection.children.link(CurCollection)
+
+        for file_elem in self.files:
+            if re.search ('.figure', file_elem.name):
+                print("Skipping detected uv file")
+            elif re.search ('.model', file_elem.name):
+                print("Skipping detected cam file")
+            else:
+                filepath = os.path.join(self.directory, file_elem.name)
+                CurFile = open(filepath,"rb")
+                CurCollection = bpy.data.collections.new(file_elem.name)#Make Collection per lmd loaded
+                bpy.context.scene.collection.children.link(CurCollection)
         
-        CurFile.seek(4)
-        lmdCheck = int.from_bytes(CurFile.read(4),byteorder='little')
-        if lmdCheck != 809782604:
-            raise Exception("Invalid LMD file.")
-        CurFile.seek(0x18)
-        TypeTableOffset = int.from_bytes(CurFile.read(4),byteorder='little')
-        tmpOffset = CurFile.seek(TypeTableOffset+0x1c)
-        VersionPointer = int.from_bytes(CurFile.read(4),byteorder='little')
-        CurFile.seek(tmpOffset+VersionPointer)
-        StringLength = int.from_bytes(CurFile.read(4),byteorder='little')
-        VersionString = CurFile.read(StringLength).decode('utf-8')
-        print("LMD Version "+VersionString)
-        CurFile.seek(tmpOffset+8)
-        TypeCount = int.from_bytes(CurFile.read(4),byteorder='little')
-        TypeTableStart = CurFile.tell()
-        TypeTable = []
-        ArmData = None
-        for x in range(TypeCount):
-            CurFile.seek(TypeTableStart+x*4)
-            offset = int.from_bytes(CurFile.read(4),byteorder='little')
-            CurFile.seek(offset-4,1)
-            StringLength = int.from_bytes(CurFile.read(4),byteorder='little')
-            TypeName = CurFile.read(StringLength).decode('utf-8')
-            TypeTable.append(TypeName)
-        for x in range(TypeCount):
-            CurFile.seek(0x34+x*4)
-            offset = CurFile.tell() + int.from_bytes(CurFile.read(4),byteorder='little')
-            if TypeTable[x] == "mesh":
-                parse_meshes(CurFile,offset,CurCollection,ArmData,self)
-            elif TypeTable[x] == "bone":
-                ArmData = parse_bones(CurFile,offset,CurCollection)
-            elif TypeTable[x] == "material":
-                parse_materials(CurFile,offset)
+                CurFile.seek(4)
+                lmdCheck = int.from_bytes(CurFile.read(4),byteorder='little')
+                if lmdCheck != 809782604:
+                    raise Exception("Invalid LMD file.")
+                CurFile.seek(0x18)
+                TypeTableOffset = int.from_bytes(CurFile.read(4),byteorder='little')
+                tmpOffset = CurFile.seek(TypeTableOffset+0x1c)
+                VersionPointer = int.from_bytes(CurFile.read(4),byteorder='little')
+                CurFile.seek(tmpOffset+VersionPointer)
+                StringLength = int.from_bytes(CurFile.read(4),byteorder='little')
+                VersionString = CurFile.read(StringLength).decode('utf-8')
+                print("LMD Version "+VersionString)
+                CurFile.seek(tmpOffset+8)
+                TypeCount = int.from_bytes(CurFile.read(4),byteorder='little')
+                TypeTableStart = CurFile.tell()
+                TypeTable = []
+                ArmData = None
+                for x in range(TypeCount):
+                    CurFile.seek(TypeTableStart+x*4)
+                    offset = int.from_bytes(CurFile.read(4),byteorder='little')
+                    CurFile.seek(offset-4,1)
+                    StringLength = int.from_bytes(CurFile.read(4),byteorder='little')
+                    TypeName = CurFile.read(StringLength).decode('utf-8')
+                    TypeTable.append(TypeName)
+                for x in range(TypeCount):
+                    CurFile.seek(0x34+x*4)
+                    offset = CurFile.tell() + int.from_bytes(CurFile.read(4),byteorder='little')
+                    if TypeTable[x] == "mesh":
+                        parse_meshes(CurFile,offset,CurCollection,ArmData,self)
+                    elif TypeTable[x] == "bone":
+                        ArmData = parse_bones(CurFile,offset,CurCollection)
+                    elif TypeTable[x] == "material":
+                        parse_materials(CurFile,offset)
         
-        
-        
-        CurFile.close()
-        del CurFile
+                CurFile.close()
+            #del CurFile
         return {'FINISHED'}
 
 def parse_materials(CurFile,Start):
@@ -387,7 +405,12 @@ def create_material_info(self,matName):
         del tmpRead
         MatFile.seek(texOffset)
         texLength = int.from_bytes(MatFile.read(1),byteorder='little')
-        texName = os.path.relpath(MatFile.read(texLength).decode('utf-8')).strip(".ktx")+".png"
+
+        #if the .ktx suffix is still in the texture filenames (due to the tool) use the code below
+        texName = os.path.relpath(MatFile.read(texLength).decode('utf-8'))+".png"
+
+        #if the .ktx suffix is not present in texture files (uncomment the line below)
+        #texName = os.path.relpath(MatFile.read(texLength).decode('utf-8')).strip(".ktx")+".png"
         MatFile.close()
         del MatFile
         tmpOffset = texName.find("\\")+2
@@ -403,7 +426,7 @@ def utils_set_mode(mode):
         bpy.ops.object.mode_set(mode=mode, toggle=False)
 
 def menu_func_import(self, context):
-    self.layout.operator(PokeMastImport.bl_idname, text="Pokemon Masters (.lmd)")
+    self.layout.operator(PokeMastImport.bl_idname, text="Pokemon Masters (.lmd) TEST")
         
 def register():
     bpy.utils.register_class(PokeMastImport)
